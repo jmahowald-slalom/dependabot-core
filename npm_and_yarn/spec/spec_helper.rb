@@ -56,7 +56,8 @@ RSpec.configure do |c|
         end
       end
 
-      ProjectFixtures::Autocorrector.new(file, nodes, dir).correct
+      start_loc = data.metadata[:line_number]
+      ProjectFixtures::Autocorrector.new(file, nodes, dir, start_loc).correct
     end
   end
 end
