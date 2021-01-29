@@ -19,11 +19,9 @@ const path = require("path");
 const npm = require("npm7");
 const Arborist = require("@npmcli/arborist");
 const detectIndent = require("detect-indent");
+const { formatErrorMessage } = require("./helpers");
 
-async function updateDependencyFiles(directory, lockfileName, dependencies) {
-  const readFile = (fileName) =>
-    fs.readFileSync(path.join(directory, fileName)).toString();
-
+const install = async (directory, lockfileName, dependencies) => {
   await new Promise((resolve) => {
     npm.load(resolve);
   });
@@ -37,16 +35,21 @@ async function updateDependencyFiles(directory, lockfileName, dependencies) {
   const arb = new Arborist({
     ...npm.flatOptions,
     path: directory,
-    packageLockOnly: true,
-    dryRun: false, // override dry-run set in the updater
+    packageLockOnly: false,
+    // NOTE: the updater sets a global .npmrc with dry-run: true to work around
+    // an issue in npm 6, we don't want that here
+    dryRun: false,
     ignoreScripts: true,
-    // TODO: seems to be no way to disable platform checks in arborist without force installing invalid peer deps
+    // TODO: figure out if we need to disable platform checks (there's currently
+    // no way to disable these without force installing invalid peer deps)
     force: false,
     engineStrict: false,
     quiet: true,
   });
 
-  const manifest = JSON.parse(readFile("package.json"));
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(directory, "package.json")).toString()
+  );
   const flattenedDependencies = flattenAllDependencies(manifest);
   const args = dependencies.map((dependency) => {
     const existingVersionRequirement = flattenedDependencies[dependency.name];
@@ -58,18 +61,18 @@ async function updateDependencyFiles(directory, lockfileName, dependencies) {
     );
   });
 
-  await arb.reify({
-    add: args,
-  });
+  await arb.reify({ add: args });
 
   // TODO: Do we need to do this for npm7?
   // Fix already present git sub-dependency with invalid "from" and "requires"
   updateLockfileWithValidGitUrls(path.join(directory, lockfileName));
 
-  const updatedLockfile = readFile(lockfileName);
+  const updatedLockfile = fs
+    .readFileSync(path.join(directory, lockfileName))
+    .toString();
 
   return { [lockfileName]: updatedLockfile };
-}
+};
 
 function updateLockfileWithValidGitUrls(lockfilePath) {
   const lockfile = fs.readFileSync(lockfilePath).toString();
@@ -170,5 +173,11 @@ function removeInvalidGitUrlsInRequires(value) {
 
   return Object.assign({}, value, { requires });
 }
+
+const updateDependencyFiles = async (directory, lockfileName, dependencies) => {
+  return install(directory, lockfileName, dependencies).catch((error) => {
+    throw new Error(formatErrorMessage(error));
+  });
+};
 
 module.exports = { updateDependencyFiles };

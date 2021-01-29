@@ -47,14 +47,21 @@ module Dependabot
 
         attr_reader :dependencies, :dependency_files, :credentials
 
-        UNREACHABLE_GIT =
-          /ls-remote (?:(-h -t)|(--tags --heads)) (?<url>.*)/.freeze
-        FORBIDDEN_PACKAGE =
-          %r{(?<package_req>[^/]+) - (Forbidden|Unauthorized)}.freeze
+        UNREACHABLE_GIT = /fatal: repository '(?<url>.*)' not found/.freeze
+        FORBIDDEN_GIT = /fatal: Authentication failed for '(?<url>.*)'/.freeze
+        FORBIDDEN_PACKAGE = %r{(?<package_req>[^/]+) - (Forbidden|Unauthorized)}.freeze
         FORBIDDEN_PACKAGE_403 = %r{^403\sForbidden\s
           -\sGET\shttps?://(?<source>[^/]+)/(?<package_req>[^/\s]+)}x.freeze
         MISSING_PACKAGE = %r{(?<package_req>[^/]+) - Not found}.freeze
         INVALID_PACKAGE = /Can't install (?<package_req>.*): Missing/.freeze
+
+        # TODO: look into fixing this in npm, seems like a bug in the git
+        # downloader introduced in npm 7
+        #
+        # NOTE: error message returned from arborist/npm 7 when trying to
+        # fetching a invalid/non-existent git ref
+        NPM7_MISSING_GIT_REF = /already exists and is not an empty directory/.freeze
+        NPM6_MISSING_GIT_REF = /did not match any file\(s\) known to git/.freeze
 
         def top_level_dependencies
           dependencies.select(&:top_level?)
@@ -249,10 +256,8 @@ module Dependabot
             handle_missing_package(sanitized_name, sanitized_error, lockfile)
           end
 
-          if error_message.match?(UNREACHABLE_GIT)
-            dependency_url =
-              error_message.match(UNREACHABLE_GIT).
-              named_captures.fetch("url")
+          if (git_error = error_message.match(UNREACHABLE_GIT) || error_message.match(FORBIDDEN_GIT))
+            dependency_url = git_error.named_captures.fetch("url")
 
             raise Dependabot::GitDependenciesNotReachable, dependency_url
           end
@@ -271,9 +276,10 @@ module Dependabot
           end
 
           if (error_message.start_with?("No matching vers", "404 Not Found") ||
-             error_message.include?("not match any file(s) known to git") ||
              error_message.include?("Non-registry package missing package") ||
-             error_message.include?("Invalid tag name")) &&
+             error_message.include?("Invalid tag name") ||
+             error_message.match?(NPM6_MISSING_GIT_REF) ||
+             error_message.match?(NPM7_MISSING_GIT_REF)) &&
              !resolvable_before_update?(lockfile)
             raise_resolvability_error(error_message, lockfile)
           end
